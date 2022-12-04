@@ -4,8 +4,9 @@ using CourseLibrary.API.Models;
 using CourseLibrary.API.ResourceParameters;
 using CourseLibrary.API.Services;
 using Microsoft.AspNetCore.Mvc;
-using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
+using System.Dynamic;
+using System.Text.Json;
 
 namespace CourseLibrary.API.Controllers;
 
@@ -25,68 +26,119 @@ public class AuthorsController : ControllerBase
         ProblemDetailsFactory problemDetailsFactory)
     {
         _courseLibraryRepository = courseLibraryRepository ??
-                                   throw new ArgumentNullException(nameof(courseLibraryRepository));
+            throw new ArgumentNullException(nameof(courseLibraryRepository));
         _mapper = mapper ??
-                  throw new ArgumentNullException(nameof(mapper));
+            throw new ArgumentNullException(nameof(mapper));
         _propertyMappingService = propertyMappingService ??
-                                  throw new ArgumentNullException(nameof(propertyMappingService));
+            throw new ArgumentNullException(nameof(propertyMappingService));
         _propertyCheckerService = propertyCheckerService ??
-                                  throw new ArgumentNullException(nameof(propertyCheckerService));
+            throw new ArgumentNullException(nameof(propertyCheckerService));
         _problemDetailsFactory = problemDetailsFactory ??
-                                 throw new ArgumentNullException(nameof(problemDetailsFactory));
+            throw new ArgumentNullException(nameof(problemDetailsFactory));
     }
+
+
 
     [HttpGet(Name = "GetAuthors")]
     [HttpHead]
     public async Task<IActionResult> GetAuthors(
         [FromQuery] AuthorsResourceParameters authorsResourceParameters)
     {
+        // throw new Exception("Test exception");
 
-        if (!_propertyMappingService.ValidMappingExistsFor<AuthorDto, Entities.Author>(
+        if (!_propertyMappingService
+            .ValidMappingExistsFor<AuthorDto, Entities.Author>(
                 authorsResourceParameters.OrderBy))
         {
             return BadRequest();
         }
 
         if (!_propertyCheckerService.TypeHasProperties<AuthorDto>
-                (authorsResourceParameters.Fields))
+              (authorsResourceParameters.Fields))
         {
             return BadRequest(
                 _problemDetailsFactory.CreateProblemDetails(HttpContext,
                     statusCode: 400,
                     detail: $"Not all requested data shaping fields exist on " +
-                            $"the resource: {authorsResourceParameters.Fields}"));
+                    $"the resource: {authorsResourceParameters.Fields}"));
         }
 
+
+        // get authors from repo
         var authorsFromRepo = await _courseLibraryRepository
             .GetAuthorsAsync(authorsResourceParameters);
-
-        var previousPageLink = authorsFromRepo.HasPrevious
-            ? CreateAuthorsResourceUri(
-                authorsResourceParameters,
-                ResourceUriType.PreviousPage) : null;
-
-        var nextPageLink = authorsFromRepo.HasNext
-            ? CreateAuthorsResourceUri(
-                authorsResourceParameters,
-                ResourceUriType.NextPage) : null;
 
         var paginationMetadata = new
         {
             totalCount = authorsFromRepo.TotalCount,
             pageSize = authorsFromRepo.PageSize,
             currentPage = authorsFromRepo.CurrentPage,
-            totalPages = authorsFromRepo.TotalPages,
-            previousPageLink = previousPageLink,
-            nextPageLink = nextPageLink
+            totalPages = authorsFromRepo.TotalPages
         };
 
         Response.Headers.Add("X-Pagination",
-            JsonSerializer.Serialize(paginationMetadata));
+               JsonSerializer.Serialize(paginationMetadata));
+
+        // create links
+        var links = CreateLinksForAuthors(authorsResourceParameters,
+            authorsFromRepo.HasNext,
+            authorsFromRepo.HasPrevious);
+
+        var shapedAuthors = _mapper.Map<IEnumerable<AuthorDto>>(authorsFromRepo)
+                               .ShapeData(authorsResourceParameters.Fields);
+
+        var shapedAuthorsWithLinks = shapedAuthors.Select(author =>
+        {
+            var authorAsDictionary = author as IDictionary<string, object?>;
+            var authorLinks = CreateLinksForAuthor(
+                (Guid)authorAsDictionary["Id"],
+                null);
+            authorAsDictionary.Add("links", authorLinks);
+            return authorAsDictionary;
+        });
+
+        var linkedCollectionResource = new
+        {
+            value = shapedAuthorsWithLinks,
+            links = links
+        };
 
         // return them
-        return Ok(_mapper.Map<IEnumerable<AuthorDto>>(authorsFromRepo)
-            .ShapeData(authorsResourceParameters.Fields));
+        return Ok(linkedCollectionResource);
+    }
+
+    private IEnumerable<LinkDto> CreateLinksForAuthors(
+        AuthorsResourceParameters authorsResourceParameters,
+        bool hasNext, bool hasPrevious)
+    {
+        var links = new List<LinkDto>();
+
+        // self 
+        links.Add(
+            new(CreateAuthorsResourceUri(authorsResourceParameters,
+                ResourceUriType.Current),
+                "self",
+                "GET"));
+
+        if (hasNext)
+        {
+            links.Add(
+                new(CreateAuthorsResourceUri(authorsResourceParameters,
+                    ResourceUriType.NextPage),
+                "nextPage",
+                "GET"));
+        }
+
+        if (hasPrevious)
+        {
+            links.Add(
+                new(CreateAuthorsResourceUri(authorsResourceParameters,
+                    ResourceUriType.PreviousPage),
+                "previousPage",
+                "GET"));
+        }
+
+        return links;
     }
 
     private string? CreateAuthorsResourceUri(
@@ -117,6 +169,7 @@ public class AuthorsController : ControllerBase
                         mainCategory = authorsResourceParameters.MainCategory,
                         searchQuery = authorsResourceParameters.SearchQuery
                     });
+            case ResourceUriType.Current:
             default:
                 return Url.Link("GetAuthors",
                     new
@@ -131,32 +184,79 @@ public class AuthorsController : ControllerBase
         }
     }
 
+
     [HttpGet("{authorId}", Name = "GetAuthor")]
-    public async Task<IActionResult> GetAuthor(Guid authorId, string? fields)
+    public async Task<IActionResult> GetAuthor(Guid authorId,
+        string? fields)
     {
         if (!_propertyCheckerService.TypeHasProperties<AuthorDto>
-                (fields))
+           (fields))
         {
             return BadRequest(
-                _problemDetailsFactory.CreateProblemDetails(HttpContext,
-                    statusCode: 400,
-                    detail: $"Not all requested data shaping fields exist on " +
-                            $"the resource: {fields}"));
+              _problemDetailsFactory.CreateProblemDetails(HttpContext,
+                  statusCode: 400,
+                  detail: $"Not all requested data shaping fields exist on " +
+                  $"the resource: {fields}"));
         }
 
-        var authorFromRepo = await _courseLibraryRepository.GetAuthorAsync(authorId);
+        // get author from repo
+        var authorFromRepo = await _courseLibraryRepository
+            .GetAuthorAsync(authorId);
 
         if (authorFromRepo == null)
         {
             return NotFound();
         }
 
-        return Ok(_mapper.Map<AuthorDto>(authorFromRepo)
-            .ShapeData(fields));
+        // create links
+        var links = CreateLinksForAuthor(authorId, fields);
+
+        // add 
+        var linkedResourceToReturn = _mapper.Map<AuthorDto>(authorFromRepo)
+            .ShapeData(fields) as IDictionary<string, object?>;
+
+        linkedResourceToReturn.Add("links", links);
+
+        // return
+        return Ok(linkedResourceToReturn);
     }
 
-    [HttpPost]
-    public async Task<ActionResult<AuthorDto>> CreateAuthor(AuthorForCreationDto author)
+    private IEnumerable<LinkDto> CreateLinksForAuthor(Guid authorId,
+        string? fields)
+    {
+        var links = new List<LinkDto>();
+
+        if (string.IsNullOrWhiteSpace(fields))
+        {
+            links.Add(
+              new(Url.Link("GetAuthor", new { authorId }),
+              "self",
+              "GET"));
+        }
+        else
+        {
+            links.Add(
+              new(Url.Link("GetAuthor", new { authorId, fields }),
+              "self",
+              "GET"));
+        }
+
+        links.Add(
+              new(Url.Link("CreateCourseForAuthor", new { authorId }),
+              "create_course_for_author",
+              "POST"));
+        links.Add(
+             new(Url.Link("GetCoursesForAuthor", new { authorId }),
+             "courses",
+             "GET"));
+
+        return links;
+    }
+
+
+    [HttpPost(Name = "CreateAuthor")]
+    public async Task<ActionResult<AuthorDto>> CreateAuthor(
+        AuthorForCreationDto author)
     {
         var authorEntity = _mapper.Map<Entities.Author>(author);
 
@@ -165,9 +265,17 @@ public class AuthorsController : ControllerBase
 
         var authorToReturn = _mapper.Map<AuthorDto>(authorEntity);
 
+        // create links
+        var links = CreateLinksForAuthor(authorToReturn.Id, null);
+
+        // add 
+        var linkedResourceToReturn = authorToReturn.ShapeData(null)
+            as IDictionary<string, object?>;
+        linkedResourceToReturn.Add("links", links);
+
         return CreatedAtRoute("GetAuthor",
-            new { authorId = authorToReturn.Id },
-            authorToReturn);
+            new { authorId = linkedResourceToReturn["Id"] },
+            linkedResourceToReturn);
     }
 
     [HttpOptions()]
