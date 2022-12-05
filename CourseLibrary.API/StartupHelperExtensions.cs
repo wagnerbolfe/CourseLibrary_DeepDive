@@ -2,6 +2,7 @@
 using CourseLibrary.API.Services;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Formatters;
 using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json.Serialization;
 
@@ -15,6 +16,8 @@ internal static class StartupHelperExtensions
         builder.Services.AddControllers(config =>
         {
             config.ReturnHttpNotAcceptable = true;
+            config.CacheProfiles.Add("240Seconds",
+                new() { Duration = 240 });
         })
         .AddNewtonsoftJson(setupAction =>
         {
@@ -57,6 +60,18 @@ internal static class StartupHelperExtensions
             };
         });
 
+        builder.Services.Configure<MvcOptions>(config =>
+        {
+            var newtonsoftJsonOutputFormatter = config.OutputFormatters
+                .OfType<NewtonsoftJsonOutputFormatter>()?.FirstOrDefault();
+
+            if (newtonsoftJsonOutputFormatter != null)
+            {
+                newtonsoftJsonOutputFormatter.SupportedMediaTypes
+                    .Add("application/vnd.marvin.hateoas+json");
+            }
+        });
+
         builder.Services.AddTransient<IPropertyMappingService, PropertyMappingService>();
         builder.Services.AddTransient<IPropertyCheckerService, PropertyCheckerService>();
 
@@ -69,6 +84,8 @@ internal static class StartupHelperExtensions
 
         builder.Services.AddAutoMapper(
             AppDomain.CurrentDomain.GetAssemblies());
+
+        builder.Services.AddResponseCaching();
 
         return builder.Build();
     }
@@ -91,6 +108,8 @@ internal static class StartupHelperExtensions
                 });
             });
         }
+
+        app.UseResponseCaching();
  
         app.UseAuthorization();
 
